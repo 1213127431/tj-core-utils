@@ -42,8 +42,20 @@ public class Demo {
         taskContainer.setThreadPool(executor);
         taskContainer.setExecutorType(ExecutorType.PARALLEL);
 
-        Map<TaskParam<Object>, TaskResult<Object>> map = TaskArranger.build().appendTask(taskContainer).doTasks();
 
+        List<SyncTaskExecutor<Object, Object>> taskExecutorList2 = new ArrayList<>();
+
+        taskExecutorList2.add(new TaskExecutor1(new TaskParam<>(4, "1")));
+        taskExecutorList2.add(new TaskExecutor2(new TaskParam<>(5, 2)));
+        taskExecutorList2.add(new TaskExecutor3(new TaskParam<>(6, 3)));
+        TaskContainer<Object, Object> taskContainer2 = new TaskContainer<>();
+        taskContainer2.setSyncTaskExecutors(taskExecutorList2);
+        taskContainer2.setThreadPool(executor);
+        taskContainer2.setExecutorType(ExecutorType.PARALLEL);
+
+        long start = System.currentTimeMillis();
+        Map<TaskParam<Object>, TaskResult<Object>> map = TaskArranger.build().appendTask(taskContainer).appendTask(taskContainer2).doTasks();
+        System.out.println(System.currentTimeMillis() - start);
         for (Map.Entry<TaskParam<Object>, TaskResult<Object>> entry : map.entrySet()) {
             System.out.println(JsonUtil.toJson(entry.getKey()));
             System.out.println(JsonUtil.toJson(entry.getValue()));
