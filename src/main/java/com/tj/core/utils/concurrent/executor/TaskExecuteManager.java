@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -96,4 +97,108 @@ public class TaskExecuteManager {
         return resultMap;
     }
 
+    /**
+     * 提交异步任务执行器
+     *
+     * @param executor              线程池
+     * @param asyncTaskExecutorList 异步任务执行器
+     * @param <K>                   taskParam中请求参数类型
+     * @param <T>                   taskResult中出参类型
+     * @param <V>                   提交异步请求返回的轮询标识类型
+     * @return 执行结果
+     * @throws InterruptedException 线程中断异常
+     */
+    public static <K, T, V> Map<TaskParam<K>, TaskResult<T>> submitAsync(Executor executor, List<AsyncTaskExecutor<K, T, V>> asyncTaskExecutorList) throws InterruptedException {
+        // 校验执行器不能为空
+        if (asyncTaskExecutorList == null || asyncTaskExecutorList.size() == 0) {
+
+            throw new IllegalArgumentException("asyncTaskExecutorList不能为空");
+        }
+
+        // 校验执行器中参数不能为空
+        for (AsyncTaskExecutor<K, T, V> asyncTaskExecutor : asyncTaskExecutorList) {
+
+            if (asyncTaskExecutor.getParam() == null || asyncTaskExecutor.getParam().getId() == null) {
+
+                throw new IllegalArgumentException("taskParam不能为空");
+            }
+
+            if (asyncTaskExecutor.getExpireTime() <= 1) {
+
+                throw new IllegalArgumentException("expireTime必须大于1");
+            }
+        }
+
+        // 校验任务唯一标识不能重复
+        Set<Integer> taskIdSet = asyncTaskExecutorList.stream().map(x -> x.getParam().getId()).collect(Collectors.toSet());
+        if (taskIdSet.size() != asyncTaskExecutorList.size()) {
+            throw new IllegalArgumentException("任务唯一标识Id不能重复");
+        }
+
+        Map<TaskParam<K>, TaskResult<T>> resultMap = new ConcurrentHashMap<>(20);
+
+        int count = asyncTaskExecutorList.size();
+        CountDownLatch countDownLatch = new CountDownLatch(count);
+
+        for (AsyncTaskExecutor<K, T, V> asyncTaskExecutor : asyncTaskExecutorList) {
+
+            executor.execute(() -> {
+
+                long startTime = System.currentTimeMillis();
+                TaskResult<T> lastRet = null;
+
+                TaskParam<K> taskParam = asyncTaskExecutor.getParam();
+
+                try {
+
+                    TaskResult<V> ret = asyncTaskExecutor.submit(taskParam);
+
+                    // 每秒轮询一次
+                    int pollingTimes = asyncTaskExecutor.getExpireTime() / 1;
+                    // 执行计数器
+                    int countFlag = 0;
+                    // 轮询是否成功
+                    boolean regFlag = false;
+
+                    while (countFlag++ < pollingTimes && !regFlag) {
+
+                        try {
+                            TimeUnit.SECONDS.sleep(1);
+                        } catch (InterruptedException e) {
+
+                        }
+
+                        // 此处查询结果发生异常则终止查询
+                        lastRet = asyncTaskExecutor.query(ret.getData());
+                        regFlag = asyncTaskExecutor.isExecuteSuccess(lastRet.getData());
+                    }
+
+                    if (lastRet != null) {
+
+                        lastRet.setPollingExpired(!regFlag);
+                    }
+
+                    resultMap.put(taskParam, lastRet);
+
+                } catch (Throwable e) {
+
+                    log.error("异步任务执行异常,执行器名称:[{}],任务参数信息:[{}]", asyncTaskExecutor.getClass().getName(), JsonUtil.toJson(taskParam), e);
+                    lastRet = new TaskResult<>();
+                    lastRet.setException(true);
+                    lastRet.setExceptionMsg(e);
+                    resultMap.put(taskParam, lastRet);
+
+                } finally {
+                    if (lastRet != null) {
+                        lastRet.setResponseTime(System.currentTimeMillis() - startTime);
+                    }
+                    countDownLatch.countDown();
+
+                }
+            });
+        }
+
+        countDownLatch.await();
+        return resultMap;
+    }
 }
